@@ -75,7 +75,7 @@ async def ask_ollama(conversation: str) -> str:
     
     # Timeout plus long pour la génération (peut être très long)
     # 300 secondes = 5 minutes
-    timeout = httpx.Timeout(10.0, read=300.0, write=30.0, pool=30.0)
+    timeout = httpx.Timeout(10.0, read=600.0, write=30.0, pool=30.0)
     
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -127,19 +127,32 @@ def parse_response(raw: str) -> dict:
     tags    = []
     content = raw
 
+    # ── Extraction du titre ──
     for line in raw.splitlines():
         if line.startswith("TITLE:"):
+            # Format idéal : TITLE: Mon titre
             title = line[6:].strip()
-            logger.debug(f"   📌 Titre trouvé: {title}")
-        elif line.startswith("TAGS:"):
+            logger.debug(f"   📌 Titre trouvé (TITLE:): {title}")
+            break
+        elif line.startswith("# "):
+            # Fallback : extraire du premier # (markdown heading)
+            title = line[2:].strip()
+            logger.debug(f"   📌 Titre trouvé (# heading): {title}")
+            break
+    
+    # ── Extraction des tags ──
+    for line in raw.splitlines():
+        if line.startswith("TAGS:"):
             tags = [t.strip() for t in line[5:].split(",") if t.strip()]
             logger.debug(f"   🏷️  Tags trouvés: {tags}")
+            break
 
+    # ── Extraction du contenu ──
     if "---" in raw:
         content = raw.split("---", 1)[1].strip()
         logger.debug(f"   📋 Séparateur '---' trouvé, contenu: {len(content)} chars")
     else:
-        logger.warn("   ⚠️  Séparateur '---' non trouvé dans la réponse")
+        logger.warn("   ⚠️  Séparateur '---' non trouvé, utilisation du contenu complet")
 
     logger.info(f"✅ Parse complète - Titre: '{title}', Tags: {len(tags)}, Contenu: {len(content)} chars")
     return {"title": title, "tags": tags, "content": content}
