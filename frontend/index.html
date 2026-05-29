@@ -7,6 +7,11 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+
+  <!-- Markdown renderer -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@2.4.0/dist/purify.min.js"></script>
+
     :root {
       --bg:        #0f1117;
       --surface:   #1a1d2e;
@@ -570,7 +575,10 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       document.getElementById('result-title').textContent = d.title;
       document.getElementById('result-tags').innerHTML =
         d.tags.map(t => `<span>${t}</span>`).join('');
-      document.getElementById('result-body').textContent  = d.content;
+      // Render markdown for result and viewer (sanitized)
+      const rendered = window.marked ? marked.parse(d.content) : d.content;
+      const safe = window.DOMPurify ? DOMPurify.sanitize(rendered) : rendered;
+      document.getElementById('result-body').innerHTML  = safe;
       document.getElementById('result-box').classList.add('visible');
 
     } catch (e) {
@@ -636,7 +644,10 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       document.getElementById('viewer-title').textContent = title;
       document.getElementById('viewer-tags').innerHTML    =
         (tags || []).map(t => `<span>${escHtml(t)}</span>`).join('');
-      document.getElementById('viewer-body').textContent  = d.content;
+      // Render markdown into the viewer (sanitized)
+      const renderedViewer = window.marked ? marked.parse(d.content) : d.content;
+      const safeViewer = window.DOMPurify ? DOMPurify.sanitize(renderedViewer) : renderedViewer;
+      document.getElementById('viewer-body').innerHTML  = safeViewer;
 
       document.querySelector('.kb-viewer-empty').style.display  = 'none';
       document.getElementById('viewer-content').classList.add('visible');
