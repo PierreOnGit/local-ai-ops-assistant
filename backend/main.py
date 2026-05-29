@@ -71,8 +71,13 @@ async def ask_ollama(conversation: str) -> str:
     logger.info(f"🚀 Appel Ollama - Modèle: {OLLAMA_MODEL}, URL: {OLLAMA_URL}")
     logger.debug(f"📝 Prompt utilisateur (premiers 200 chars): {conversation[:200]}")
     
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    # Timeout plus long pour la génération (peut être très long)
+    # 300 secondes = 5 minutes
+    timeout = httpx.Timeout(10.0, read=300.0, write=30.0, pool=30.0)
+    
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
+            logger.info(f"⏳ Envoi de la requête à Ollama (timeout: 300s)...")
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
@@ -100,12 +105,19 @@ async def ask_ollama(conversation: str) -> str:
                 logger.error(f"❌ Erreur JSON: {str(e)}")
                 raise ValueError(f"Invalid response from Ollama: {str(e)}")
         except httpx.ConnectError as e:
-            logger.error(f"❌ Impossible de se connecter à Ollama ({OLLAMA_URL}): {str(e)}")
-            raise
+            logger.error(f"❌ Impossible de se connecter à Ollama ({OLLAMA_URL})")
+            logger.error(f"   Erreur: {str(e)}")
+            logger.error(f"   💡 Conseil: Ollama est-il lancé? (ollama serve)")
+            raise ValueError(f"Cannot connect to Ollama at {OLLAMA_URL}. Is it running?")
+        except httpx.ReadTimeout as e:
+            logger.error(f"❌ Timeout lors de la lecture de la réponse Ollama")
+            logger.error(f"   Erreur: {str(e)}")
+            logger.error(f"   💡 Conseil: Ollama prend trop de temps (>300s), ou ne répond pas")
+            raise ValueError(f"Ollama timeout after 300 seconds. The model may be too slow or not responding.")
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ Ollama retourne une erreur HTTP {e.response.status_code}")
             logger.error(f"   Réponse: {e.response.text[:500]}")
-            raise
+            raise ValueError(f"Ollama error {e.response.status_code}: {e.response.text[:200]}")
 
 def parse_response(raw: str) -> dict:
     logger.info("🔍 Parsing de la réponse Ollama...")
@@ -169,10 +181,15 @@ async def generate(body: GenerateRequest):
         logger.info(f"🎉 Génération réussie - Titre: '{parsed['title']}'")
         return {"title": parsed["title"], "tags": parsed["tags"], "content": parsed["content"]}
     
+    except ValueError as e:
+        # Erreurs spécifiques d'Ollama (timeout, connexion, etc.)
+        error_msg = str(e)
+        logger.error(f"❌ Erreur Ollama: {error_msg}")
+        return JSONResponse({"error": error_msg}, status_code=503)
     except httpx.HTTPStatusError as e:
         error_msg = f"Ollama error: {e.response.status_code} - {e.response.text[:500]}"
         logger.error(f"❌ {error_msg}")
-        return JSONResponse({"error": error_msg}, status_code=500)
+        return JSONResponse({"error": error_msg}, status_code=503)
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()

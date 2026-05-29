@@ -540,8 +540,27 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       });
 
       if (!r.ok) {
-        const errorText = await r.text();
-        throw new Error(`Erreur ${r.status}: ${errorText.slice(0, 200)}`);
+        let errorMsg = `Erreur ${r.status}`;
+        
+        // Essayer de parser le JSON d'erreur
+        try {
+          const errorData = await r.json();
+          if (errorData.error) {
+            errorMsg = errorData.error;
+          }
+        } catch {
+          // Si ce n'est pas du JSON valide, utiliser le texte brut
+          errorMsg = `Erreur ${r.status}: ${await r.text().slice(0, 200)}`;
+        }
+        
+        // Messages spécifiques par status
+        if (r.status === 503) {
+          errorMsg = `⚠️ Ollama indisponible\n${errorMsg}\n\n💡 Conseil: Ollama est-il lancé? (ollama serve)`;
+        } else if (r.status === 500) {
+          errorMsg = `❌ Erreur serveur\n${errorMsg}`;
+        }
+        
+        throw new Error(errorMsg);
       }
 
       const d = await r.json();
