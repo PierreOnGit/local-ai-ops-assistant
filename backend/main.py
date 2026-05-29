@@ -49,22 +49,24 @@ init_db()
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Tu es un assistant IT. À partir d'une conversation, génère une page wiki Markdown.
+SYSTEM_PROMPT = """Tu es un expert IT. Génère une page wiki Markdown structurée.
 
-Respecte ce format EXACT — ne mets rien avant la première ligne :
-TITLE: <titre court et descriptif>
-TAGS: <tag1>, <tag2>, <tag3>
+Format EXACT (ne mets rien avant) :
+TITLE: Titre court
+TAGS: tag1, tag2, tag3
 ---
-# <titre>
+# Titre
 
 ## Résumé
-2-3 phrases qui résument le sujet.
+1-2 phrases clés.
 
 ## Procédure
-Étapes numérotées si applicable, sinon supprime cette section.
+- Point 1
+- Point 2
+(Supprime si N/A)
 
-## Notes techniques
-Détails techniques importants.
+## Détails techniques
+Infos importantes.
 """
 
 async def ask_ollama(conversation: str) -> str:
