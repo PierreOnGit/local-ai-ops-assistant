@@ -601,8 +601,8 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       </div>`;
       return;
     }
-    list.innerHTML = pages.map(p => `
-      <div class="kb-card" onclick="openPage('${p.filename}', '${escHtml(p.title)}', ${JSON.stringify(p.tags)}, this)">
+    list.innerHTML = pages.map((p, i) => `
+      <div class="kb-card" onclick="openPage('${p.filename}', '${escHtml(p.title)}', ${i}, this)">
         <h4>${escHtml(p.title)}</h4>
         <div class="kb-card-tags">${p.tags.map(t => `<span>${escHtml(t)}</span>`).join('')}</div>
         <div class="kb-card-date">${p.created.slice(0,10)}</div>
@@ -610,20 +610,42 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
     `).join('');
   }
 
-  async function openPage(filename, title, tags, card) {
+  async function openPage(filename, title, tagsOrIndex, card) {
+    console.log(`📖 Ouverture page: ${filename}`);
+    
     document.querySelectorAll('.kb-card').forEach(c => c.classList.remove('active'));
     card.classList.add('active');
 
-    const r = await fetch('/pages/' + filename);
-    const d = await r.json();
+    try {
+      // Resolve tags if an index was passed
+      let tags = tagsOrIndex;
+      if (typeof tagsOrIndex === 'number') tags = allPages[tagsOrIndex].tags || [];
 
-    document.getElementById('viewer-title').textContent = title;
-    document.getElementById('viewer-tags').innerHTML    =
-      tags.map(t => `<span>${escHtml(t)}</span>`).join('');
-    document.getElementById('viewer-body').textContent  = d.content;
+      const r = await fetch('/pages/' + filename);
+      
+      if (!r.ok) {
+        throw new Error(`HTTP ${r.status}: ${await r.text().slice(0, 100)}`);
+      }
 
-    document.querySelector('.kb-viewer-empty').style.display  = 'none';
-    document.getElementById('viewer-content').classList.add('visible');
+      const d = await r.json();
+      
+      if (!d.content) {
+        throw new Error("Réponse sans contenu");
+      }
+
+      document.getElementById('viewer-title').textContent = title;
+      document.getElementById('viewer-tags').innerHTML    =
+        (tags || []).map(t => `<span>${escHtml(t)}</span>`).join('');
+      document.getElementById('viewer-body').textContent  = d.content;
+
+      document.querySelector('.kb-viewer-empty').style.display  = 'none';
+      document.getElementById('viewer-content').classList.add('visible');
+      
+      console.log(`✅ Page chargée: ${title}`);
+    } catch (e) {
+      console.error(`❌ Erreur lors du chargement: ${e.message}`);
+      alert(`Erreur: ${e.message}`);
+    }
   }
 
   function filterKB(q) {
@@ -635,7 +657,11 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
   }
 
   function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return s.replace(/&/g,'&amp;')
+            .replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;')
+            .replace(/'/g,'&#39;');
   }
 
   // ── Init ─────────────────────────────────────────────────────────
