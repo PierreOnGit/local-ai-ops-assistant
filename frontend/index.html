@@ -4,13 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Local AI Ops Assistant</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-
   <!-- Markdown renderer -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@2.4.0/dist/purify.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --bg:        #0f1117;
@@ -198,13 +196,27 @@
 
     .viewer-title { font-size: 1.25rem; font-weight: 600; }
     .viewer-tags  { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-    .viewer-tags span {
-      background: var(--tag-bg);
-      border-radius: 4px;
-      padding: 0.15rem 0.55rem;
-      font-size: 0.75rem;
+    .tag-badge {
+  background: var(--tag-bg);
+  border-radius: 4px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-right: 0.3rem;
+}
+    .edit-tags-btn {
+      background: transparent;
+      border: 1px solid var(--border);
       color: var(--muted);
+      border-radius: 4px;
+      padding: 0.1rem 0.5rem;
+      font-size: 0.72rem;
+      cursor: pointer;
+      margin-left: 0.4rem;
+      transition: border-color .15s, color .15s;
     }
+    .edit-tags-btn:hover { border-color: var(--accent); color: var(--accent); }
+
     .viewer-body {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -399,7 +411,15 @@
       <span class="icon">⬆️</span> Ingestion
     </div>
     <div class="nav-bottom">
+<div class="nav-bottom">
       <span id="ollama-status">Ollama…</span>
+    </div>
+    <!-- Tag Cloud -->
+    <div class="tag-cloud" id="tag-cloud" style="padding: 0.5rem 1rem; border-top: 1px solid var(--border);">
+      <h4 style="font-size:0.8rem;margin-bottom:0.5rem;color:var(--muted);">Tags</h4>
+      <div id="tags-container" style="display:flex;flex-wrap:wrap;gap:0.3rem;">
+        <!-- Tags will be populated here -->
+      </div>
     </div>
   </nav>
 
@@ -596,6 +616,8 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
     document.getElementById('kb-count').textContent =
       allPages.length + (allPages.length === 1 ? ' page' : ' pages');
     renderKB(allPages);
+    // Refresh tag cloud after pages load
+    loadTagCloud();
   }
 
   function renderKB(pages) {
@@ -619,45 +641,55 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
   }
 
   async function openPage(filename, title, tagsOrIndex, card) {
-    console.log(`📖 Ouverture page: ${filename}`);
-    
-    document.querySelectorAll('.kb-card').forEach(c => c.classList.remove('active'));
-    card.classList.add('active');
+  console.log(`📖 Ouverture page: ${filename}`);
 
-    try {
-      // Resolve tags if an index was passed
-      let tags = tagsOrIndex;
-      if (typeof tagsOrIndex === 'number') tags = allPages[tagsOrIndex].tags || [];
+  document.querySelectorAll('.kb-card').forEach(c => c.classList.remove('active'));
+  card.classList.add('active');
 
-      const r = await fetch('/pages/' + filename);
-      
-      if (!r.ok) {
-        throw new Error(`HTTP ${r.status}: ${await r.text().slice(0, 100)}`);
-      }
+  // Store current filename globally for tag editing
+  window.currentFilename = filename;
 
-      const d = await r.json();
-      
-      if (!d.content) {
-        throw new Error("Réponse sans contenu");
-      }
+  try {
+    // Resolve tags if an index was passed
+    let tags = tagsOrIndex;
+    if (typeof tagsOrIndex === 'number') tags = allPages[tagsOrIndex].tags || [];
 
-      document.getElementById('viewer-title').textContent = title;
-      document.getElementById('viewer-tags').innerHTML    =
-        (tags || []).map(t => `<span>${escHtml(t)}</span>`).join('');
-      // Render markdown into the viewer (sanitized)
-      const renderedViewer = window.marked ? marked.parse(d.content) : d.content;
-      const safeViewer = window.DOMPurify ? DOMPurify.sanitize(renderedViewer) : renderedViewer;
-      document.getElementById('viewer-body').innerHTML  = safeViewer;
+    const r = await fetch('/pages/' + filename);
 
-      document.querySelector('.kb-viewer-empty').style.display  = 'none';
-      document.getElementById('viewer-content').classList.add('visible');
-      
-      console.log(`✅ Page chargée: ${title}`);
-    } catch (e) {
-      console.error(`❌ Erreur lors du chargement: ${e.message}`);
-      alert(`Erreur: ${e.message}`);
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}: ${await r.text().slice(0, 100)}`);
     }
+
+    const d = await r.json();
+
+    if (!d.content) {
+      throw new Error("Réponse sans contenu");
+    }
+
+    document.getElementById('viewer-title').textContent = title;
+    const tagsContainer = document.getElementById('viewer-tags');
+    tagsContainer.innerHTML = (tags || []).map(t => `<span class="tag-badge">${escHtml(t)}</span>`).join('');
+    // Add edit button next to tags
+    const editBtn = document.createElement('button');
+    editBtn.id = 'edit-tags-btn';
+    editBtn.textContent = '✏️ Éditer';
+    editBtn.className = 'edit-tags-btn';
+    editBtn.onclick = () => enterTagEditMode(tags || []);
+    tagsContainer.appendChild(editBtn);
+    // Render markdown into the viewer (sanitized)
+    const renderedViewer = window.marked ? marked.parse(d.content) : d.content;
+    const safeViewer = window.DOMPurify ? DOMPurify.sanitize(renderedViewer) : renderedViewer;
+    document.getElementById('viewer-body').innerHTML  = safeViewer;
+
+    document.querySelector('.kb-viewer-empty').style.display  = 'none';
+    document.getElementById('viewer-content').classList.add('visible');
+
+    console.log(`✅ Page chargée: ${title}`);
+  } catch (e) {
+    console.error(`❌ Erreur lors du chargement: ${e.message}`);
+    alert(`Erreur: ${e.message}`);
   }
+}
 
   function filterKB(q) {
     const lq = q.toLowerCase();
@@ -679,6 +711,47 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
   checkHealth();
   setInterval(checkHealth, 30_000);
   loadKB();
+  loadTagCloud();
+
+  // ── Tag Cloud Functions ───────────────────────────────────────
+  async function loadTagCloud() {
+    try {
+      const r = await fetch('/tags');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const tags = await r.json(); // [{name, count}]
+      const container = document.getElementById('tags-container');
+      container.innerHTML = tags.map(t => `<span class="tag-badge" data-name="${t.name}" style="cursor:pointer;">${t.name} (${t.count})</span>`).join(' ');
+      // add click listener to filter by tag
+      container.querySelectorAll('.tag-badge').forEach(el => {
+        el.onclick = () => filterKB(el.dataset.name);
+      });
+    } catch (e) {
+      console.error('Failed to load tags', e);
+    }
+  }
+
+  function enterTagEditMode(currentTags) {
+    const newTags = prompt('Edit tags (comma separated)', currentTags.join(', '));
+    if (newTags === null) return; // cancel
+    const tagsArray = newTags.split(',').map(t => t.trim()).filter(t => t);
+    if (!window.currentFilename) {
+      alert('Filename unavailable');
+      return;
+    }
+    fetch(`/pages/${window.currentFilename}/tags`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({tags: tagsArray})
+    })
+    .then(r => r.json())
+    .then(data => {
+      const tagsContainer = document.getElementById('viewer-tags');
+      tagsContainer.innerHTML = tagsArray.map(t => `<span class="tag-badge">${t}</span>`).join('');
+      loadTagCloud(); // refresh cloud
+    })
+    .catch(err => alert('Error updating tags: ' + err));
+  }
+
 </script>
 
 </body>

@@ -47,6 +47,25 @@ def init_db():
 
 init_db()
 
+def get_existing_tags():
+    try:
+        con = sqlite3.connect(DB_PATH)
+        rows = con.execute("SELECT tags FROM pages").fetchall()
+        con.close()
+        tags_set = set()
+        for r in rows:
+            if r[0]:
+                try:
+                    loaded_tags = json.loads(r[0])
+                    for t in loaded_tags:
+                        tags_set.add(t.strip().lower())
+                except Exception:
+                    pass
+        return sorted(list(tags_set))
+    except Exception as e:
+        logger.error(f"Error fetching existing tags: {e}")
+        return []
+
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """Tu es un expert IT. Génère une page wiki Markdown structurée.
@@ -69,10 +88,21 @@ TAGS: tag1, tag2, tag3
 Infos importantes.
 """
 
-async def ask_ollama(conversation: str) -> str:
+async def ask_ollama(conversation: str, existing_tags: list = None) -> str:
     logger.info(f"🚀 Appel Ollama - Modèle: {OLLAMA_MODEL}, URL: {OLLAMA_URL}")
     logger.debug(f"📝 Prompt utilisateur (premiers 200 chars): {conversation[:200]}")
     
+    system_prompt = SYSTEM_PROMPT
+    if existing_tags:
+        tags_str = ", ".join(existing_tags)
+        system_prompt += f"\n\nIMPORTANT: Voici la liste des tags existants : {tags_str}.\n" \
+                         f"Tu DOIS réutiliser ces tags exacts si le contenu de la conversation correspond à l'un d'eux.\n" \
+                         f"Ne crée un nouveau tag que si AUCUN des tags existants n'est pertinent.\n" \
+                         f"Les tags doivent être au format minuscule, simples et sans espaces (ex: 'docker', 'vpn', 'ssl')."
+        logger.info(f"🏷️ Tags existants fournis au prompt: {tags_str}")
+    else:
+        system_prompt += f"\n\nIMPORTANT: Génère des tags pertinents en minuscules pour catégoriser cette page. Préfère des tags courts, précis et standards (ex: nginx, docker, ssl, vpn, debian)."
+
     # Timeout plus long pour la génération (peut être très long)
     # 300 secondes = 5 minutes
     timeout = httpx.Timeout(10.0, read=600.0, write=30.0, pool=30.0)
@@ -85,7 +115,7 @@ async def ask_ollama(conversation: str) -> str:
                 json={
                     "model": OLLAMA_MODEL,
                     "prompt": f"Conversation :\n\n{conversation}\n\nGénère la page wiki.",
-                    "system": SYSTEM_PROMPT,
+                    "system": system_prompt,
                     "stream": False,
                 },
             )
@@ -171,7 +201,8 @@ class GenerateRequest(BaseModel):
 async def generate(body: GenerateRequest):
     logger.info(f"📥 Nouvelle requête de génération ({len(body.conversation)} caractères)")
     try:
-        raw    = await ask_ollama(body.conversation)
+        existing_tags = get_existing_tags()
+        raw    = await ask_ollama(body.conversation, existing_tags)
         parsed = parse_response(raw)
 
         # Fichier Markdown
@@ -213,6 +244,58 @@ async def generate(body: GenerateRequest):
             {"error": str(e), "details": error_trace},
             status_code=500
         )
+
+class UpdateTagsRequest(BaseModel):
+    tags: list
+
+@app.put("/pages/{filename:path}/tags")
+async def update_page_tags(filename: str, body: UpdateTagsRequest):
+    logger.info(f"📥 Mise à jour des tags pour {filename} : {body.tags}")
+    try:
+        normalized_tags = sorted(list(set(t.strip().lower() for t in body.tags if t.strip())))
+        con = sqlite3.connect(DB_PATH)
+        cursor = con.execute("SELECT title FROM pages WHERE filename = ?", (filename,))
+        row = cursor.fetchone()
+        if not row:
+            con.close()
+            logger.warn(f"⚠️ Page introuvable pour mise à jour des tags : {filename}")
+            return JSONResponse({"error": "Page introuvable"}, status_code=404)
+        
+        con.execute(
+            "UPDATE pages SET tags = ? WHERE filename = ?",
+            (json.dumps(normalized_tags), filename)
+        )
+        con.commit()
+        con.close()
+        
+        logger.info(f"✅ Tags mis à jour avec succès pour {filename} : {normalized_tags}")
+        return {"filename": filename, "tags": normalized_tags}
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la mise à jour des tags : {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/tags")
+async def list_tags():
+    try:
+        con = sqlite3.connect(DB_PATH)
+        rows = con.execute("SELECT tags FROM pages").fetchall()
+        con.close()
+        tag_counts = {}
+        for r in rows:
+            if r[0]:
+                try:
+                    loaded_tags = json.loads(r[0])
+                    for t in loaded_tags:
+                        t_norm = t.strip().lower()
+                        if t_norm:
+                            tag_counts[t_norm] = tag_counts.get(t_norm, 0) + 1
+                except Exception:
+                    pass
+        sorted_tags = sorted([{"name": k, "count": v} for k, v in tag_counts.items()], key=lambda x: x["name"])
+        return sorted_tags
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la récupération des tags : {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/pages")
 async def list_pages():
