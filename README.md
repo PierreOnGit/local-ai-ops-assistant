@@ -1,6 +1,7 @@
 # 🤖 Local AI Ops Assistant
 
-> Transforme des conversations IT en pages wiki Markdown — 100% local, zéro cloud.
+> Transforme des conversations IT en pages wiki Markdown, puis réponds aux techniciens
+> (à l'écrit ou à la voix) en fouillant cette base — 100% local, zéro cloud.
 
 **[🚀 Démarrage rapide](#démarrage-rapide) • [📖 Stack](#stack) • [🆘 Troubleshooting](#troubleshooting) • [🗺️ Roadmap](#roadmap)**
 
@@ -35,6 +36,32 @@ docker compose up
 > Le premier lancement télécharge le modèle (plusieurs Go), patience.
 
 Puis ouvre **[http://localhost:8000](http://localhost:8000)** 🎉
+
+---
+
+## 📞 Assistant (mode "call")
+
+Onglet **Assistant** : le technicien pose sa question (au clavier ou au 🎤), l'IA fouille la
+Knowledge Base et répond à voix haute.
+
+```
+Question ──► ⚡ Recherche rapide (index plein texte SQLite FTS5, quelques ms)
+                │   les meilleures pages sont données au modèle
+                ▼
+             Le modèle répond… ou creuse si ça ne suffit pas :
+             🔎 search_docs (autres mots-clés)  📖 read_doc (page complète)   ← max 4 tours
+                ▼
+             Réponse streamée, lue phrase par phrase 🔊 + sources cliquables
+```
+
+- **Recherche approfondie** : nécessite un modèle qui gère les *tools*
+  (`qwen3`, `qwen2.5`, `llama3.1`, `mistral`…). Avec un modèle sans tools (`phi`…),
+  l'assistant se contente de la recherche rapide (et le signale).
+- **Voix** : la synthèse vocale utilise les voix installées sur le système (locale).
+  La dictée 🎤 utilise la reconnaissance vocale du navigateur : sur Chrome elle passe par
+  les serveurs de Google (pas 100% local). Une transcription locale (Whisper) est prévue.
+- API : `POST /chat` (flux NDJSON d'événements `search`, `read`, `token`, `done`…) et
+  `GET /search?q=...` pour la recherche seule.
 
 ---
 
@@ -141,7 +168,8 @@ curl -X POST http://localhost:11434/api/generate \
 
 ```
 .
-├── backend/main.py      ← Backend FastAPI
+├── backend/main.py      ← Backend FastAPI (wiki, recherche, API)
+├── backend/chat.py      ← Assistant : recherche rapide → outils → réponse
 ├── frontend/index.html  ← Frontend complet (fichier unique)
 ├── frontend/vendor/     ← marked + DOMPurify embarqués (fonctionne hors ligne)
 ├── tests/               ← Tests pytest (faux Ollama)
@@ -159,7 +187,8 @@ curl -X POST http://localhost:11434/api/generate \
 | Phase | Fonctionnalité | Statut |
 |-------|---|---|
 | **1** | Wiki auto (texte → Markdown), tags, suppression | ✅ MVP |
-| **2** | RAG (questions/réponses sur wiki) | 📅 Août |
+| **2** | Assistant "call" : recherche rapide + approfondie, réponse vocale | 🚧 En cours |
+| **2b** | "Stories" structurées, dictée locale (Whisper), voix locale (Piper) | 📅 |
 | **3** | Ingestion (PDF, DOCX, logs) | 📅 Sept |
 | **4** | Diagnostic de logs IA | 📅 Oct |
 | **5** | Agents multi-rôles | 📅 Nov |

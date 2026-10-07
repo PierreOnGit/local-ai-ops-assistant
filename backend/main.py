@@ -7,10 +7,12 @@ import logging
 from contextlib import closing
 from datetime import datetime
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+from backend.chat import run_agent, ToolsUnsupported
 
 load_dotenv()
 
@@ -54,9 +56,15 @@ def init_db():
                 created   TEXT
             )
         """)
+        # Index plein texte pour la recherche (accents ignorés : "reseau" trouve "réseau")
+        con.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
+                filename UNINDEXED, title, tags, content,
+                tokenize = 'unicode61 remove_diacritics 2'
+            )
+        """)
         con.commit()
-
-init_db()
+    reindex_all()
 
 def load_tags(raw) -> list:
     """Décode la colonne `tags` (JSON) sans jamais lever d'exception."""
@@ -94,6 +102,85 @@ def safe_wiki_path(filename: str):
     if os.path.dirname(path) != os.path.realpath(WIKI_DIR):
         return None
     return path
+
+# ── Recherche ────────────────────────────────────────────────────────────────
+
+def read_page(filename: str):
+    """Page complète (métadonnées + contenu) ou None."""
+    path = safe_wiki_path(filename)
+    if not path or not os.path.exists(path):
+        return None
+    with db() as con:
+        row = con.execute("SELECT title, tags FROM pages WHERE filename = ?", (filename,)).fetchone()
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    title, tags = (row[0], load_tags(row[1])) if row else (filename[:-3], [])
+    return {"filename": filename, "title": title, "tags": tags, "content": content}
+
+def index_page(filename: str):
+    """(Ré)indexe une page dans la recherche plein texte."""
+    page = read_page(filename)
+    with db() as con:
+        con.execute("DELETE FROM pages_fts WHERE filename = ?", (filename,))
+        if page:
+            con.execute(
+                "INSERT INTO pages_fts (filename, title, tags, content) VALUES (?,?,?,?)",
+                (filename, page["title"], " ".join(page["tags"]), page["content"]),
+            )
+        con.commit()
+
+def reindex_all():
+    """Reconstruit l'index depuis la base (rapide, fait au démarrage)."""
+    with db() as con:
+        con.execute("DELETE FROM pages_fts")
+        con.commit()
+        filenames = [r[0] for r in con.execute("SELECT filename FROM pages").fetchall()]
+    for filename in filenames:
+        index_page(filename)
+    logger.info(f"🔎 Index de recherche : {len(filenames)} page(s)")
+
+STOPWORDS = set("""
+le la les l un une des de du d et ou en a à au aux pour par sur sous dans avec sans
+comment quoi quel quelle quels quelles qui que qu est sont être ai as avoir faire fait
+je j tu il elle on nous vous ils elles me m te t se s ce c cette ces mon ma mes ton ta tes son sa ses
+ne n pas plus y lui leur leurs dont où ça cela peut peux dois doit faut il-y bonjour salut merci stp svp
+the a an of to is how what
+""".split())
+
+def fts_query(text: str) -> str:
+    """Transforme une question libre en requête FTS5 (mots-clés OR, préfixes)."""
+    words = [w for w in re.findall(r"\w+", text.lower()) if len(w) > 1 and w not in STOPWORDS]
+    seen = []
+    for w in words:
+        if w not in seen:
+            seen.append(w)
+    return " OR ".join(f'"{w}"*' for w in seen[:12])
+
+def search_pages(query: str, limit: int = 5) -> list:
+    q = fts_query(query)
+    if not q:
+        return []
+    with db() as con:
+        try:
+            rows = con.execute(
+                """
+                SELECT filename, title, tags,
+                       snippet(pages_fts, 3, '«', '»', '…', 16),
+                       bm25(pages_fts, 0.0, 8.0, 4.0, 1.0) AS score
+                FROM pages_fts WHERE pages_fts MATCH ?
+                ORDER BY score LIMIT ?
+                """,
+                (q, limit),
+            ).fetchall()
+        except sqlite3.OperationalError as e:
+            logger.warning(f"⚠️ Requête de recherche invalide ({q!r}): {e}")
+            return []
+    return [
+        {"filename": r[0], "title": r[1], "tags": r[2].split() if r[2] else [], "snippet": r[3]}
+        for r in rows
+    ]
+
+init_db()
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 
@@ -178,6 +265,34 @@ async def ask_ollama(conversation: str, existing_tags: list = None) -> str:
     logger.info(f"📄 Réponse générée ({len(response_text)} caractères)")
     logger.debug(f"📋 Contenu (premiers 500 chars):\n{response_text[:500]}")
     return response_text
+
+async def ollama_chat_stream(messages: list, tools: list = None):
+    """Appel streamé à /api/chat. Lève ToolsUnsupported si le modèle ne gère pas les outils."""
+    payload = {"model": OLLAMA_MODEL, "messages": messages, "stream": True, "options": {"temperature": 0.2}}
+    if tools:
+        payload["tools"] = tools
+    timeout = httpx.Timeout(10.0, read=OLLAMA_TIMEOUT, write=30.0, pool=30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as r:
+                if r.status_code >= 400:
+                    body = (await r.aread()).decode(errors="replace")
+                    if tools and "does not support tools" in body:
+                        raise ToolsUnsupported()
+                    if r.status_code == 404:
+                        raise OllamaError(f"Model '{OLLAMA_MODEL}' not found. Run: ollama pull {OLLAMA_MODEL}")
+                    raise OllamaError(f"Ollama error {r.status_code}: {body[:200]}")
+                async for line in r.aiter_lines():
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("error"):
+                        raise OllamaError(f"Ollama error: {chunk['error']}")
+                    yield chunk
+    except httpx.ConnectError:
+        raise OllamaError(f"Cannot connect to Ollama at {OLLAMA_URL}. Is it running? (ollama serve)")
+    except httpx.TimeoutException:
+        raise OllamaError(f"Ollama timeout after {OLLAMA_TIMEOUT:.0f} seconds.")
 
 # Lignes d'en-tête tolérantes : "TITLE: x", "**Title:** x", "## TAGS : a, b"…
 _HEADER_RE = re.compile(r"^[\s>#*_`]*(TITLE|TITRE|TAGS)[\s*_`]*:[\s*_`]*(.*?)[\s*_`]*$", re.IGNORECASE)
@@ -282,6 +397,7 @@ async def generate(body: GenerateRequest):
                 (parsed["title"], json.dumps(parsed["tags"]), filename, datetime.now().isoformat()),
             )
             con.commit()
+        index_page(filename)
 
         logger.info(f"🎉 Génération réussie - Titre: '{parsed['title']}'")
         return {**parsed, "filename": filename}
@@ -306,6 +422,7 @@ async def update_page_tags(filename: str, body: UpdateTagsRequest):
         logger.warning(f"⚠️ Page introuvable pour mise à jour des tags : {filename}")
         return JSONResponse({"error": "Page introuvable"}, status_code=404)
 
+    index_page(filename)
     logger.info(f"✅ Tags mis à jour pour {filename} : {normalized_tags}")
     return {"filename": filename, "tags": normalized_tags}
 
@@ -349,10 +466,45 @@ async def delete_page(filename: str):
     file_existed = os.path.exists(filepath)
     if file_existed:
         os.remove(filepath)
+    index_page(filename)
     if cur.rowcount == 0 and not file_existed:
         return JSONResponse({"error": "introuvable"}, status_code=404)
     logger.info(f"🗑️ Page supprimée: {filename}")
     return {"deleted": filename}
+
+@app.get("/search")
+async def search(q: str = "", limit: int = 5):
+    return search_pages(q, max(1, min(limit, 20)))
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    voice: bool = True
+
+@app.post("/chat")
+async def chat(body: ChatRequest):
+    """Assistant "call" : flux NDJSON d'événements (search, read, token, reset, done, error)."""
+    history = [m.model_dump() for m in body.messages]
+    logger.info(f"📞 Question : {history[-1]['content'][:200] if history else ''}")
+
+    async def events():
+        try:
+            async for event in run_agent(
+                history, search=search_pages, read=read_page,
+                llm_stream=ollama_chat_stream, voice=body.voice,
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except OllamaError as e:
+            logger.error(f"❌ Erreur Ollama: {e}")
+            yield json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False) + "\n"
+        except Exception as e:
+            logger.exception(f"❌ Erreur assistant: {e}")
+            yield json.dumps({"type": "error", "error": f"Erreur interne: {e}"}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")
 
 @app.get("/health")
 async def health():
