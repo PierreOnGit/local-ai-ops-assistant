@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Local AI Ops Assistant</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
   <!-- Markdown renderer (embarqué : l'app fonctionne hors ligne) -->
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
@@ -472,6 +473,11 @@
       font-size: 1.1rem; padding: 0.45rem 0.65rem; cursor: pointer;
     }
     .mic-btn.listening { border-color: var(--red); background: var(--red-bg); animation: pulse 1.2s infinite; }
+    .mic-btn.transcribing { border-color: var(--accent); background: var(--accent-dim); cursor: wait; }
+    .mic-level {
+      height: 3px; background: var(--red); border-radius: 2px; width: 0;
+      transition: width .1s; margin-top: 2px;
+    }
     @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(252,129,129,.15); } }
 
     /* ── Stories ── */
@@ -556,6 +562,9 @@
         <input type="checkbox" id="voice-toggle" checked> 🔊 Réponse vocale
         <span class="tts-engine" id="tts-engine"></span>
       </label>
+      <label class="call-toggle" title="Après chaque réponse, le micro se réactive tout seul (comme un appel)">
+        <input type="checkbox" id="handsfree-toggle"> 🔁 Mains libres
+      </label>
       <button class="ghost-btn" id="btn-stop-voice" onclick="stopSpeaking()" title="Couper la voix">🔇</button>
       <button class="ghost-btn" onclick="newCall()">＋ Nouvel appel</button>
     </div>
@@ -568,7 +577,10 @@
     </div>
 
     <div class="call-inputbar">
-      <button class="mic-btn" id="btn-mic" onclick="toggleMic()" title="Parler (dictée du navigateur)">🎤</button>
+      <div>
+        <button class="mic-btn" id="btn-mic" onclick="toggleMic()" title="Parler">🎤</button>
+        <div class="mic-level" id="mic-level"></div>
+      </div>
       <textarea id="call-input" rows="1" placeholder="Ta question…"
         onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendQuestion(); }"></textarea>
       <button id="btn-send" onclick="sendQuestion()">Envoyer</button>
@@ -725,6 +737,7 @@ Tech: C'est le certificat qui a expiré. Mets à jour FortiClient en 7.2 depuis 
         el.title       = '';
       }
       setTTSEngine(d.tts || {});
+      setSTTEngine(d.stt || {});
     } catch {
       el.textContent = '● offline';
       el.className   = 'ko';
@@ -1024,6 +1037,7 @@ Tech: C'est le certificat qui a expiré. Mets à jour FortiClient en 7.2 depuis 
       answerEl.innerHTML = renderMarkdown(answer || "_Pas de réponse._");
       if (answer) chatHistory.push({ role: 'assistant', content: answer });
       addReplayButton(sourcesEl, answer);
+      if (answer) relistenAfterSpeech();
     } catch (e) {
       speaker?.reset();
       answerEl.classList.remove('streaming');
@@ -1166,11 +1180,142 @@ Tech: C'est le certificat qui a expiré. Mets à jour FortiClient en 7.2 depuis 
     if ('speechSynthesis' in window) speechSynthesis.cancel();
   }
 
-  // ── Voix : dictée (Web Speech API du navigateur) ──────────────────
+  // ── Voix : dictée ─────────────────────────────────────────────────
+  // Whisper (local, côté serveur) si disponible, sinon dictée du navigateur.
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let recognizer = null;
+  const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  let sttEngine = null;
+
+  function setSTTEngine(info) {
+    const btn = document.getElementById('btn-mic');
+    if (info.engine === 'whisper' && canRecord) {
+      sttEngine = 'whisper';
+      btn.title = `Parler — transcription locale Whisper (${info.model})` +
+        (info.loaded ? '' : '\nPremier usage : chargement du modèle, quelques secondes à minutes');
+    } else if (SpeechRec) {
+      sttEngine = 'navigateur';
+      btn.title = 'Parler — dictée du navigateur (peut passer par un service en ligne)' +
+        (info.reason ? '\nWhisper indisponible : ' + info.reason : '');
+    } else {
+      sttEngine = null;
+    }
+    btn.parentElement.style.display = sttEngine ? '' : 'none';
+  }
 
   function toggleMic() {
+    if (sttEngine === 'whisper') return recording ? stopRecording() : startRecording();
+    if (sttEngine === 'navigateur') return toggleBrowserDictation();
+  }
+
+  function isListening() { return !!(recording || recognizer || transcribing); }
+
+  // ── Whisper : enregistrement avec arrêt automatique sur silence ──
+  const SILENCE_MS = 1500;     // silence après la parole qui termine la question
+  const NO_SPEECH_MS = 8000;   // abandon si personne ne parle
+  const MAX_RECORD_MS = 30000;
+  let recording = null;
+  let transcribing = false;
+
+  async function startRecording() {
+    if (recording || transcribing) return;
+    stopSpeaking();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      alert('Micro inaccessible : ' + e.message +
+        '\n(le micro ne fonctionne qu\'en https ou sur http://localhost)');
+      return;
+    }
+    const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4']
+      .find(m => MediaRecorder.isTypeSupported(m));
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+    // Détection de voix : niveau RMS comparé au bruit de fond mesuré au début
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Float32Array(analyser.fftSize);
+    const t0 = performance.now();
+    let noise = 0, noiseSamples = 0, spoke = false, lastVoice = t0;
+
+    const rec = { recorder, stream, ctx, spoke: false };
+    rec.timer = setInterval(() => {
+      analyser.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (const v of data) sum += v * v;
+      const rms = Math.sqrt(sum / data.length);
+      const now = performance.now();
+      if (now - t0 < 300) { noise += rms; noiseSamples++; return; }
+      const threshold = Math.max(0.015, (noise / Math.max(noiseSamples, 1)) * 3);
+      if (rms > threshold) { spoke = rec.spoke = true; lastVoice = now; }
+      document.getElementById('mic-level').style.width = Math.min(100, rms * 600) + '%';
+      if ((spoke && now - lastVoice > SILENCE_MS) || (!spoke && now - t0 > NO_SPEECH_MS) || now - t0 > MAX_RECORD_MS) {
+        stopRecording();
+      }
+    }, 100);
+
+    recorder.onstop = () => {
+      if (rec.spoke && chunks.length) transcribe(new Blob(chunks, { type: recorder.mimeType }));
+      else setMicHint("Je n'ai rien entendu.");
+    };
+    recorder.start();
+    recording = rec;
+    document.getElementById('btn-mic').classList.add('listening');
+    setMicHint('Je t\'écoute… (arrêt automatique quand tu te tais)');
+  }
+
+  function stopRecording() {
+    const rec = recording;
+    if (!rec) return;
+    recording = null;
+    clearInterval(rec.timer);
+    if (rec.recorder.state !== 'inactive') rec.recorder.stop();
+    rec.stream.getTracks().forEach(t => t.stop());
+    rec.ctx.close();
+    document.getElementById('btn-mic').classList.remove('listening');
+    document.getElementById('mic-level').style.width = '0';
+  }
+
+  async function transcribe(blob) {
+    const btn = document.getElementById('btn-mic');
+    transcribing = true;
+    btn.classList.add('transcribing');
+    setMicHint('Transcription…');
+    try {
+      const r = await fetch('/stt', {
+        method: 'POST',
+        headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+        body: blob,
+      });
+      if (!r.ok) throw new Error(await readError(r));
+      const { text } = await r.json();
+      setMicHint('');
+      if (!text) return setMicHint("Je n'ai rien compris, réessaie.");
+      document.getElementById('call-input').value = text;
+      sendQuestion();
+    } catch (e) {
+      setMicHint('');
+      alert('Transcription impossible : ' + e.message);
+    } finally {
+      transcribing = false;
+      btn.classList.remove('transcribing');
+    }
+  }
+
+  function setMicHint(text) {
+    document.getElementById('call-input').placeholder = text || 'Ta question…';
+  }
+
+  // ── Dictée du navigateur (secours) ──
+  let recognizer = null;
+
+  function toggleBrowserDictation() {
     const btn = document.getElementById('btn-mic');
     if (recognizer) { recognizer.stop(); return; }
     stopSpeaking();
@@ -1199,7 +1344,21 @@ Tech: C'est le certificat qui a expiré. Mets à jour FortiClient en 7.2 depuis 
     btn.classList.add('listening');
   }
 
-  if (!SpeechRec) document.getElementById('btn-mic').style.display = 'none';
+  // ── Mains libres : réécoute après la fin de la réponse vocale ──
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function relistenAfterSpeech() {
+    if (!document.getElementById('handsfree-toggle').checked || !sttEngine) return;
+    const gen = speechGen;
+    await sleep(300);           // laisse la dernière phrase entrer dans la file
+    await audioQueue;
+    while ('speechSynthesis' in window && speechSynthesis.speaking) await sleep(200);
+    // Voix coupée, nouvelle question ou micro déjà actif : on ne relance pas
+    if (gen !== speechGen || chatBusy || isListening()) return;
+    if (document.getElementById('handsfree-toggle').checked) toggleMic();
+  }
+
+  setSTTEngine({});
   if ('speechSynthesis' in window) speechSynthesis.getVoices();  // précharge les voix
 
   // ── Init ─────────────────────────────────────────────────────────

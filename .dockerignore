@@ -7,3 +7,4 @@ data
 tests
 .env
 voices
+models

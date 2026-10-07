@@ -21,6 +21,8 @@ cd local-ai-ops-assistant
 pip install -r requirements.txt
 # Voix française pour les réponses vocales (~60 Mo, une seule fois)
 python -m piper.download_voices fr_FR-siwis-medium --download-dir voices
+# Modèle Whisper pour la dictée (~480 Mo pour "small", sinon téléchargé au 1er usage)
+python -m backend.stt download
 ```
 
 ### Lancer l'app
@@ -79,10 +81,18 @@ Question ──► ⚡ Recherche rapide (index plein texte SQLite FTS5, quelques
   (synthèse neuronale locale, ~0,2 s par phrase sur CPU). Si Piper ou la voix n'est pas installé,
   l'app se rabat sur la voix du navigateur — l'onglet Assistant indique le moteur utilisé.
   Changer de voix : `PIPER_VOICE` dans `.env`.
-- **Dictée 🎤** : utilise la reconnaissance vocale du navigateur. Sur Chrome elle passe par
-  les serveurs de Google (pas 100% local). Une transcription locale (Whisper) est prévue.
+- **Dictée 🎤** : transcription locale par **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)**.
+  Clique sur 🎤, parle : l'enregistrement s'arrête tout seul après 1,5 s de silence.
+  Whisper reçoit le vocabulaire de ta base (tags, titres) pour bien écrire "FortiClient", "spooler"…
+  Modèle réglable avec `WHISPER_MODEL` (`base` = plus rapide, `medium` = plus précis).
+  Sans faster-whisper, l'app utilise la dictée du navigateur (qui, sur Chrome, passe par Google).
+- **🔁 Mains libres** : après chaque réponse vocale, le micro se relance tout seul — on enchaîne
+  les questions comme dans un appel. Cliquer sur 🎤 pendant que l'IA parle lui coupe la parole.
+- ⚠️ Le micro ne fonctionne que sur `http://localhost` ou en **https** (règle des navigateurs) :
+  pour l'utiliser depuis un autre poste, il faut passer l'app derrière un reverse proxy https.
 - API : `POST /chat` (flux NDJSON d'événements `search`, `read`, `token`, `done`…),
-  `GET /search?q=...` pour la recherche seule, `POST /tts` (texte → WAV).
+  `GET /search?q=...` pour la recherche seule, `POST /tts` (texte → WAV),
+  `POST /stt` (audio brut → texte).
 
 ---
 
@@ -192,6 +202,8 @@ curl -X POST http://localhost:11434/api/generate \
 ├── backend/main.py      ← Backend FastAPI (wiki, recherche, API)
 ├── backend/chat.py      ← Assistant : recherche rapide → outils → réponse
 ├── backend/tts.py       ← Synthèse vocale Piper
+├── backend/stt.py       ← Transcription Whisper
+├── models/whisper/      ← Modèles Whisper téléchargés (non versionné)
 ├── voices/              ← Voix Piper téléchargées (non versionné)
 ├── frontend/index.html  ← Frontend complet (fichier unique)
 ├── frontend/vendor/     ← marked + DOMPurify embarqués (fonctionne hors ligne)
@@ -212,7 +224,7 @@ curl -X POST http://localhost:11434/api/generate \
 | **1** | Wiki auto (texte → Markdown), tags, suppression | ✅ MVP |
 | **2** | Assistant "call" : recherche rapide + approfondie, réponse vocale | 🚧 En cours |
 | **2b** | Stories d'incidents (symptômes), voix locale Piper | ✅ |
-| **2c** | Dictée locale (Whisper) | 📅 |
+| **2c** | Dictée locale (Whisper), mode mains libres | ✅ |
 | **3** | Ingestion (PDF, DOCX, logs) | 📅 Sept |
 | **4** | Diagnostic de logs IA | 📅 Oct |
 | **5** | Agents multi-rôles | 📅 Nov |

@@ -6,7 +6,7 @@ import sqlite3
 import logging
 from contextlib import closing
 from datetime import datetime
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from typing import Literal
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from backend.chat import run_agent, ToolsUnsupported
 from backend.tts import tts, TTSUnavailable
+from backend.stt import stt, STTUnavailable, MAX_AUDIO_BYTES
 
 load_dotenv()
 
@@ -603,6 +604,33 @@ async def text_to_speech(body: TTSRequest):
         return JSONResponse({"error": str(e)}, status_code=503)
     return Response(audio, media_type="audio/wav")
 
+def stt_vocabulary(max_chars: int = 400) -> str:
+    """Vocabulaire de la base (tags, titres) pour guider l'orthographe de Whisper."""
+    with db() as con:
+        rows = con.execute("SELECT title, tags FROM pages ORDER BY created DESC").fetchall()
+    words = []
+    for title, tags in rows:
+        for w in load_tags(tags) + [title]:
+            if w not in words:
+                words.append(w)
+    vocab = ", ".join(words)[:max_chars]
+    return f"Support informatique. Vocabulaire : {vocab}." if vocab else "Support informatique."
+
+@app.post("/stt")
+async def speech_to_text(request: Request):
+    """Transcription locale (Whisper). Corps de la requête = l'audio brut (webm, ogg, wav…)."""
+    audio = await request.body()
+    if not audio:
+        return JSONResponse({"error": "Audio vide"}, status_code=400)
+    if len(audio) > MAX_AUDIO_BYTES:
+        return JSONResponse({"error": "Enregistrement trop long"}, status_code=413)
+    try:
+        return await run_in_threadpool(stt.transcribe, audio, stt_vocabulary())
+    except STTUnavailable as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
 @app.get("/health")
 async def health():
     ollama_ok, model_ok = False, False
@@ -622,4 +650,5 @@ async def health():
         "model": OLLAMA_MODEL,
         "model_available": model_ok,
         "tts": await run_in_threadpool(tts.status),
+        "stt": stt.status(),
     }
