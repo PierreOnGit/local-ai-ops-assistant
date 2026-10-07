@@ -27,10 +27,12 @@ pip install -r requirements.txt
 uvicorn backend.main:app --reload
 ```
 
-**Option 2 : Avec Docker**
+**Option 2 : Avec Docker** (Ollama + téléchargement du modèle inclus)
 ```bash
 docker compose up
+# Autre modèle : OLLAMA_MODEL=phi docker compose up
 ```
+> Le premier lancement télécharge le modèle (plusieurs Go), patience.
 
 Puis ouvre **[http://localhost:8000](http://localhost:8000)** 🎉
 
@@ -43,7 +45,12 @@ Crée un `.env` à la racine (ou copie `.env.example`) :
 ```bash
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3
+OLLAMA_TIMEOUT=600   # secondes max par génération
+LOG_LEVEL=INFO       # DEBUG pour voir prompts et réponses brutes
 ```
+
+Le badge en bas à gauche de l'interface indique l'état : `● qwen3` (vert) si tout va bien,
+`● Ollama KO` si Ollama n'est pas lancé, `● qwen3 absent` si le modèle n'est pas téléchargé.
 
 **Modèles recommandés** :
 - `qwen3` — Bon rapport qualité/vitesse
@@ -74,11 +81,17 @@ Les logs affichent chaque étape :
 🎉 Génération réussie - Titre: "Configuration VPN"
 ```
 
-Pour plus de détails :
+Pour plus de détails, lance avec `LOG_LEVEL=DEBUG` (dans `.env` ou en variable d'environnement).
+
+---
+
+## 🧪 Tests
+
+Les tests utilisent un faux Ollama : pas besoin d'avoir un modèle pour les lancer.
 
 ```bash
-# Dans backend/main.py, ligne 19 :
-logging.basicConfig(level=logging.DEBUG)  # Au lieu de INFO
+pip install -r requirements-dev.txt
+pytest
 ```
 
 ---
@@ -94,13 +107,13 @@ ollama serve
 curl http://localhost:11434/api/tags
 ```
 
-### ⏱️ "Timeout after 300 seconds"
+### ⏱️ "Ollama timeout after 600 seconds"
 ```bash
 # ✅ Solution 1 : Utiliser un modèle plus rapide
 OLLAMA_MODEL=qwen2.5
 
-# ✅ Solution 2 : Augmenter le timeout (backend/main.py, ligne 71)
-timeout = httpx.Timeout(10.0, read=600.0, ...)  # 600s = 10 min
+# ✅ Solution 2 : Augmenter le timeout (dans .env)
+OLLAMA_TIMEOUT=1200  # 20 min
 ```
 
 ### 📋 "Model not found"
@@ -128,8 +141,10 @@ curl -X POST http://localhost:11434/api/generate \
 
 ```
 .
-├── backend/main.py      ← Backend FastAPI (~220 lignes)
-├── frontend/index.html  ← Frontend complet (~700 lignes)
+├── backend/main.py      ← Backend FastAPI
+├── frontend/index.html  ← Frontend complet (fichier unique)
+├── frontend/vendor/     ← marked + DOMPurify embarqués (fonctionne hors ligne)
+├── tests/               ← Tests pytest (faux Ollama)
 ├── data/
 │   └── wiki/            ← Pages générées (.md)
 ├── docker-compose.yml
@@ -143,7 +158,7 @@ curl -X POST http://localhost:11434/api/generate \
 
 | Phase | Fonctionnalité | Statut |
 |-------|---|---|
-| **1** | Wiki auto (texte → Markdown) | ✅ MVP |
+| **1** | Wiki auto (texte → Markdown), tags, suppression | ✅ MVP |
 | **2** | RAG (questions/réponses sur wiki) | 📅 Août |
 | **3** | Ingestion (PDF, DOCX, logs) | 📅 Sept |
 | **4** | Diagnostic de logs IA | 📅 Oct |

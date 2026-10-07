@@ -6,3 +6,4 @@ data/wiki/
 data/*.db
 .env
 .DS_Store
+.pytest_cache/
