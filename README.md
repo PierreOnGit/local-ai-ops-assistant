@@ -19,6 +19,8 @@
 git clone https://github.com/ton-username/local-ai-ops-assistant
 cd local-ai-ops-assistant
 pip install -r requirements.txt
+# Voix française pour les réponses vocales (~60 Mo, une seule fois)
+python -m piper.download_voices fr_FR-siwis-medium --download-dir voices
 ```
 
 ### Lancer l'app
@@ -36,6 +38,22 @@ docker compose up
 > Le premier lancement télécharge le modèle (plusieurs Go), patience.
 
 Puis ouvre **[http://localhost:8000](http://localhost:8000)** 🎉
+
+---
+
+## 🩺 Stories d'incidents
+
+À l'ingestion, choisis **Story d'incident** (par défaut) ou **Page wiki**.
+Une story transforme un échange de support en fiche réutilisable :
+
+```
+TITLE / TAGS / SYMPTOMS (formulations "au téléphone" : « le vpn reste bloqué à 98% » ; « erreur -14 »)
+## Symptômes → ## Contexte → ## Diagnostic → ## Résolution → ## Vérification
+```
+
+Les **symptômes** sont indexés avec le plus fort poids dans la recherche : quand un tech décrit
+ce qu'il voit, c'est la story au symptôme le plus proche qui remonte. L'assistant vérifie que les
+symptômes correspondent, guide la résolution dans l'ordre puis donne la vérification.
 
 ---
 
@@ -57,11 +75,14 @@ Question ──► ⚡ Recherche rapide (index plein texte SQLite FTS5, quelques
 - **Recherche approfondie** : nécessite un modèle qui gère les *tools*
   (`qwen3`, `qwen2.5`, `llama3.1`, `mistral`…). Avec un modèle sans tools (`phi`…),
   l'assistant se contente de la recherche rapide (et le signale).
-- **Voix** : la synthèse vocale utilise les voix installées sur le système (locale).
-  La dictée 🎤 utilise la reconnaissance vocale du navigateur : sur Chrome elle passe par
+- **Voix** : les réponses sont lues par **[Piper](https://github.com/OHF-Voice/piper1-gpl)**
+  (synthèse neuronale locale, ~0,2 s par phrase sur CPU). Si Piper ou la voix n'est pas installé,
+  l'app se rabat sur la voix du navigateur — l'onglet Assistant indique le moteur utilisé.
+  Changer de voix : `PIPER_VOICE` dans `.env`.
+- **Dictée 🎤** : utilise la reconnaissance vocale du navigateur. Sur Chrome elle passe par
   les serveurs de Google (pas 100% local). Une transcription locale (Whisper) est prévue.
-- API : `POST /chat` (flux NDJSON d'événements `search`, `read`, `token`, `done`…) et
-  `GET /search?q=...` pour la recherche seule.
+- API : `POST /chat` (flux NDJSON d'événements `search`, `read`, `token`, `done`…),
+  `GET /search?q=...` pour la recherche seule, `POST /tts` (texte → WAV).
 
 ---
 
@@ -170,6 +191,8 @@ curl -X POST http://localhost:11434/api/generate \
 .
 ├── backend/main.py      ← Backend FastAPI (wiki, recherche, API)
 ├── backend/chat.py      ← Assistant : recherche rapide → outils → réponse
+├── backend/tts.py       ← Synthèse vocale Piper
+├── voices/              ← Voix Piper téléchargées (non versionné)
 ├── frontend/index.html  ← Frontend complet (fichier unique)
 ├── frontend/vendor/     ← marked + DOMPurify embarqués (fonctionne hors ligne)
 ├── tests/               ← Tests pytest (faux Ollama)
@@ -188,7 +211,8 @@ curl -X POST http://localhost:11434/api/generate \
 |-------|---|---|
 | **1** | Wiki auto (texte → Markdown), tags, suppression | ✅ MVP |
 | **2** | Assistant "call" : recherche rapide + approfondie, réponse vocale | 🚧 En cours |
-| **2b** | "Stories" structurées, dictée locale (Whisper), voix locale (Piper) | 📅 |
+| **2b** | Stories d'incidents (symptômes), voix locale Piper | ✅ |
+| **2c** | Dictée locale (Whisper) | 📅 |
 | **3** | Ingestion (PDF, DOCX, logs) | 📅 Sept |
 | **4** | Diagnostic de logs IA | 📅 Oct |
 | **5** | Agents multi-rôles | 📅 Nov |

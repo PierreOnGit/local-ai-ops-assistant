@@ -33,8 +33,8 @@ TOOLS = [
             "name": "search_docs",
             "description": (
                 "Recherche plein texte dans la base de connaissances IT. "
-                "Utilise des mots-clés techniques précis, essaie des synonymes "
-                "si la première recherche ne donne rien (ex: 'forticlient gateway', 'vpn')."
+                "Utilise des mots-clés techniques précis ou le symptôme / message d'erreur, "
+                "essaie des synonymes si la première recherche ne donne rien (ex: 'forticlient 98%', 'spooler')."
             ),
             "parameters": {
                 "type": "object",
@@ -59,7 +59,13 @@ TOOLS = [
 
 BASE_PROMPT = """Tu es l'assistant ops d'une équipe de techniciens IT. Un technicien te pose une question pendant une intervention.
 Réponds en français, UNIQUEMENT à partir de la base de connaissances. N'invente jamais de procédure, d'adresse ou de commande.
-Si l'information n'est pas dans la base, dis-le clairement en une phrase."""
+Si l'information n'est pas dans la base, dis-le clairement en une phrase.
+
+La base contient surtout des STORIES d'incidents (Symptômes → Diagnostic → Résolution → Vérification).
+- Vérifie d'abord que les symptômes décrits par le technicien correspondent à ceux de la story.
+  S'ils ne correspondent qu'en partie, dis-le et propose la vérification de diagnostic qui permet de trancher.
+- Donne ensuite la résolution dans l'ordre, puis la vérification à faire.
+- Si plusieurs stories peuvent correspondre, pose UNE question courte pour les départager."""
 
 TOOLS_PROMPT = """Si les pages ci-dessous ne suffisent pas, utilise l'outil search_docs avec d'autres mots-clés
 (synonymes, nom du logiciel, message d'erreur…) puis read_doc pour lire une page en entier.
@@ -122,7 +128,11 @@ def _format_pages(pages: list) -> str:
         content = p["content"]
         if len(content) > PAGE_CHARS:
             content = content[:PAGE_CHARS] + "\n[…page tronquée, utilise read_doc pour la suite]"
-        blocks.append(f"### Page « {p['title']} » (fichier: {p['filename']}, tags: {', '.join(p['tags'])})\n{content}")
+        kind = "Story" if p.get("kind") == "story" else "Page"
+        header = f"### {kind} « {p['title']} » (fichier: {p['filename']}, tags: {', '.join(p['tags'])})"
+        if p.get("symptoms"):
+            header += f"\nSymptômes connus : {' ; '.join(p['symptoms'])}"
+        blocks.append(f"{header}\n{content}")
     return "\n\n".join(blocks)
 
 

@@ -7,12 +7,15 @@ import logging
 from contextlib import closing
 from datetime import datetime
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from typing import Literal
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from backend.chat import run_agent, ToolsUnsupported
+from backend.tts import tts, TTSUnavailable
 
 load_dotenv()
 
@@ -56,10 +59,18 @@ def init_db():
                 created   TEXT
             )
         """)
-        # Index plein texte pour la recherche (accents ignorés : "reseau" trouve "réseau")
+        # Migration : colonnes ajoutées avec les stories
+        columns = {r[1] for r in con.execute("PRAGMA table_info(pages)")}
+        if "kind" not in columns:
+            con.execute("ALTER TABLE pages ADD COLUMN kind TEXT DEFAULT 'page'")
+        if "symptoms" not in columns:
+            con.execute("ALTER TABLE pages ADD COLUMN symptoms TEXT DEFAULT '[]'")
+        # Index plein texte (accents ignorés : "reseau" trouve "réseau").
+        # Recréé à chaque démarrage : il est reconstruit juste après de toute façon.
+        con.execute("DROP TABLE IF EXISTS pages_fts")
         con.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
-                filename UNINDEXED, title, tags, content,
+            CREATE VIRTUAL TABLE pages_fts USING fts5(
+                filename UNINDEXED, title, symptoms, tags, content,
                 tokenize = 'unicode61 remove_diacritics 2'
             )
         """)
@@ -111,11 +122,17 @@ def read_page(filename: str):
     if not path or not os.path.exists(path):
         return None
     with db() as con:
-        row = con.execute("SELECT title, tags FROM pages WHERE filename = ?", (filename,)).fetchone()
+        row = con.execute(
+            "SELECT title, tags, kind, symptoms FROM pages WHERE filename = ?", (filename,)
+        ).fetchone()
     with open(path, encoding="utf-8") as f:
         content = f.read()
-    title, tags = (row[0], load_tags(row[1])) if row else (filename[:-3], [])
-    return {"filename": filename, "title": title, "tags": tags, "content": content}
+    if not row:
+        row = (filename[:-3], None, "page", None)
+    return {
+        "filename": filename, "title": row[0], "tags": load_tags(row[1]),
+        "kind": row[2] or "page", "symptoms": load_tags(row[3]), "content": content,
+    }
 
 def index_page(filename: str):
     """(Ré)indexe une page dans la recherche plein texte."""
@@ -124,8 +141,8 @@ def index_page(filename: str):
         con.execute("DELETE FROM pages_fts WHERE filename = ?", (filename,))
         if page:
             con.execute(
-                "INSERT INTO pages_fts (filename, title, tags, content) VALUES (?,?,?,?)",
-                (filename, page["title"], " ".join(page["tags"]), page["content"]),
+                "INSERT INTO pages_fts (filename, title, symptoms, tags, content) VALUES (?,?,?,?,?)",
+                (filename, page["title"], "\n".join(page["symptoms"]), " ".join(page["tags"]), page["content"]),
             )
         con.commit()
 
@@ -164,10 +181,12 @@ def search_pages(query: str, limit: int = 5) -> list:
         try:
             rows = con.execute(
                 """
-                SELECT filename, title, tags,
-                       snippet(pages_fts, 3, '«', '»', '…', 16),
-                       bm25(pages_fts, 0.0, 8.0, 4.0, 1.0) AS score
-                FROM pages_fts WHERE pages_fts MATCH ?
+                SELECT f.filename, f.title, f.tags,
+                       snippet(pages_fts, 4, '«', '»', '…', 16),
+                       bm25(pages_fts, 0.0, 8.0, 10.0, 4.0, 1.0) AS score,
+                       p.kind, p.symptoms
+                FROM pages_fts f LEFT JOIN pages p ON p.filename = f.filename
+                WHERE pages_fts MATCH ?
                 ORDER BY score LIMIT ?
                 """,
                 (q, limit),
@@ -176,7 +195,8 @@ def search_pages(query: str, limit: int = 5) -> list:
             logger.warning(f"⚠️ Requête de recherche invalide ({q!r}): {e}")
             return []
     return [
-        {"filename": r[0], "title": r[1], "tags": r[2].split() if r[2] else [], "snippet": r[3]}
+        {"filename": r[0], "title": r[1], "tags": r[2].split() if r[2] else [], "snippet": r[3],
+         "kind": r[5] or "page", "symptoms": load_tags(r[6])}
         for r in rows
     ]
 
@@ -204,14 +224,48 @@ TAGS: tag1, tag2, tag3
 Infos importantes.
 """
 
+STORY_PROMPT = """Tu es un expert IT. À partir de la conversation, rédige une STORY d'incident :
+la fiche qu'un technicien retrouvera quand il rencontrera le même problème.
+
+Format EXACT (ne mets rien avant) :
+TITLE: Titre court qui décrit le problème (ex: VPN FortiClient bloqué à 98%)
+TAGS: tag1, tag2, tag3
+SYMPTOMS: symptôme 1 ; symptôme 2 ; message d'erreur exact
+---
+# Titre
+
+## Symptômes
+- Ce que l'utilisateur ou le technicien constate (messages d'erreur exacts, comportement)
+
+## Contexte
+Environnement concerné : poste, logiciel, version, site… (Supprime si N/A)
+
+## Diagnostic
+- Vérifications à faire pour confirmer la cause, dans l'ordre
+- Cause identifiée
+
+## Résolution
+1. Étape 1 (commandes exactes entre `backticks`)
+2. Étape 2
+
+## Vérification
+Comment confirmer que le problème est réglé.
+
+SYMPTOMS : 3 à 6 formulations courtes, telles qu'un technicien les dirait au téléphone
+(ex: "le vpn reste bloqué à 98%", "erreur -14"), séparées par des points-virgules.
+N'invente rien qui ne soit pas dans la conversation : si une section n'a pas d'information, supprime-la.
+"""
+
+PROMPTS = {"story": STORY_PROMPT, "page": SYSTEM_PROMPT}
+
 class OllamaError(Exception):
     """Erreur côté Ollama (indisponible, timeout, modèle absent…)."""
 
-async def ask_ollama(conversation: str, existing_tags: list = None) -> str:
-    logger.info(f"🚀 Appel Ollama - Modèle: {OLLAMA_MODEL}, URL: {OLLAMA_URL}")
+async def ask_ollama(conversation: str, existing_tags: list = None, kind: str = "story") -> str:
+    logger.info(f"🚀 Appel Ollama - Modèle: {OLLAMA_MODEL}, URL: {OLLAMA_URL}, type: {kind}")
     logger.debug(f"📝 Prompt utilisateur (premiers 200 chars): {conversation[:200]}")
 
-    system_prompt = SYSTEM_PROMPT
+    system_prompt = PROMPTS[kind]
     if existing_tags:
         tags_str = ", ".join(existing_tags)
         system_prompt += f"\n\nIMPORTANT: Voici la liste des tags existants : {tags_str}.\n" \
@@ -232,7 +286,8 @@ async def ask_ollama(conversation: str, existing_tags: list = None) -> str:
                 f"{OLLAMA_URL}/api/generate",
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": f"Conversation :\n\n{conversation}\n\nGénère la page wiki.",
+                    "prompt": f"Conversation :\n\n{conversation}\n\n"
+                              + ("Génère la story." if kind == "story" else "Génère la page wiki."),
                     "system": system_prompt,
                     "stream": False,
                     "options": {"temperature": 0.3},
@@ -295,7 +350,18 @@ async def ollama_chat_stream(messages: list, tools: list = None):
         raise OllamaError(f"Ollama timeout after {OLLAMA_TIMEOUT:.0f} seconds.")
 
 # Lignes d'en-tête tolérantes : "TITLE: x", "**Title:** x", "## TAGS : a, b"…
-_HEADER_RE = re.compile(r"^[\s>#*_`]*(TITLE|TITRE|TAGS)[\s*_`]*:[\s*_`]*(.*?)[\s*_`]*$", re.IGNORECASE)
+_HEADER_RE = re.compile(
+    r"^[\s>#*_`]*(TITLE|TITRE|TAGS|SYMPT[OÔ]MS?|SYMPT[OÔ]MES)[\s*_`]*:[\s*_`]*(.*?)[\s*_`]*$", re.IGNORECASE
+)
+_SYMPTOMS_SECTION_RE = re.compile(r"^##\s*Sympt[oô]mes?\s*$(.*?)(?=^##\s|\Z)", re.IGNORECASE | re.MULTILINE | re.DOTALL)
+
+def clean_symptoms(items) -> list:
+    out = []
+    for item in items:
+        item = re.sub(r"\s+", " ", str(item)).strip(" -*•\"'`.").strip()
+        if item and item.lower() not in (o.lower() for o in out):
+            out.append(item[:150])
+    return out[:10]
 _THINK_RE  = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 def parse_response(raw: str) -> dict:
@@ -307,7 +373,7 @@ def parse_response(raw: str) -> dict:
     if fenced:
         text = fenced.group(1).strip()
 
-    title, tags = None, []
+    title, tags, symptoms = None, [], []
     body_lines = []
     for line in text.splitlines():
         m = _HEADER_RE.match(line)
@@ -318,6 +384,9 @@ def parse_response(raw: str) -> dict:
                 continue
             if key == "TAGS" and not tags:
                 tags = [t for t in re.split(r"[,;]", value) if t.strip()]
+                continue
+            if key.startswith("SYMPT") and not symptoms:
+                symptoms = re.split(r"[;|]", value)
                 continue
         body_lines.append(line)
 
@@ -340,8 +409,18 @@ def parse_response(raw: str) -> dict:
         content = f"# {title}\n"
     tags = normalize_tags(tags)
 
-    logger.info(f"✅ Parse complète - Titre: '{title}', Tags: {len(tags)}, Contenu: {len(content)} chars")
-    return {"title": title, "tags": tags, "content": content}
+    # Fallback symptômes : puces de la section "## Symptômes"
+    symptoms = clean_symptoms(symptoms)
+    if not symptoms:
+        m = _SYMPTOMS_SECTION_RE.search(content)
+        if m:
+            symptoms = clean_symptoms(
+                l.strip()[1:] for l in m.group(1).splitlines() if l.strip()[:1] in ("-", "*", "•")
+            )
+
+    logger.info(f"✅ Parse complète - Titre: '{title}', Tags: {len(tags)}, Symptômes: {len(symptoms)}, "
+                f"Contenu: {len(content)} chars")
+    return {"title": title, "tags": tags, "symptoms": symptoms, "content": content}
 
 def make_filename(title: str) -> str:
     """Nom de fichier unique pour un titre. Un même titre réutilise son fichier."""
@@ -367,6 +446,7 @@ async def index():
 
 class GenerateRequest(BaseModel):
     conversation: str
+    kind: Literal["story", "page"] = "story"
 
 @app.post("/generate")
 async def generate(body: GenerateRequest):
@@ -376,7 +456,7 @@ async def generate(body: GenerateRequest):
 
     logger.info(f"📥 Nouvelle requête de génération ({len(conversation)} caractères)")
     try:
-        raw = await ask_ollama(conversation, get_existing_tags())
+        raw = await ask_ollama(conversation, get_existing_tags(), kind=body.kind)
     except OllamaError as e:
         logger.error(f"❌ Erreur Ollama: {e}")
         return JSONResponse({"error": str(e)}, status_code=503)
@@ -393,14 +473,16 @@ async def generate(body: GenerateRequest):
         # Base de données
         with db() as con:
             con.execute(
-                "INSERT OR REPLACE INTO pages (title, tags, filename, created) VALUES (?,?,?,?)",
-                (parsed["title"], json.dumps(parsed["tags"]), filename, datetime.now().isoformat()),
+                "INSERT OR REPLACE INTO pages (title, tags, filename, created, kind, symptoms) "
+                "VALUES (?,?,?,?,?,?)",
+                (parsed["title"], json.dumps(parsed["tags"]), filename, datetime.now().isoformat(),
+                 body.kind, json.dumps(parsed["symptoms"], ensure_ascii=False)),
             )
             con.commit()
         index_page(filename)
 
         logger.info(f"🎉 Génération réussie - Titre: '{parsed['title']}'")
-        return {**parsed, "filename": filename}
+        return {**parsed, "kind": body.kind, "filename": filename}
     except Exception as e:
         logger.exception(f"❌ Erreur lors de l'enregistrement: {e}")
         return JSONResponse({"error": f"Erreur interne: {e}"}, status_code=500)
@@ -440,10 +522,11 @@ async def list_tags():
 async def list_pages():
     with db() as con:
         rows = con.execute(
-            "SELECT id, title, tags, filename, created FROM pages ORDER BY created DESC"
+            "SELECT id, title, tags, filename, created, kind, symptoms FROM pages ORDER BY created DESC"
         ).fetchall()
     return [
-        {"id": r[0], "title": r[1], "tags": load_tags(r[2]), "filename": r[3], "created": r[4] or ""}
+        {"id": r[0], "title": r[1], "tags": load_tags(r[2]), "filename": r[3], "created": r[4] or "",
+         "kind": r[5] or "page", "symptoms": load_tags(r[6])}
         for r in rows
     ]
 
@@ -506,6 +589,20 @@ async def chat(body: ChatRequest):
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
+class TTSRequest(BaseModel):
+    text: str
+
+@app.post("/tts")
+async def text_to_speech(body: TTSRequest):
+    """Synthèse vocale locale (Piper) -> audio/wav. 503 si Piper n'est pas disponible."""
+    if not body.text.strip():
+        return JSONResponse({"error": "Texte vide"}, status_code=400)
+    try:
+        audio = await run_in_threadpool(tts.synthesize, body.text)
+    except TTSUnavailable as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    return Response(audio, media_type="audio/wav")
+
 @app.get("/health")
 async def health():
     ollama_ok, model_ok = False, False
@@ -524,4 +621,5 @@ async def health():
         "ollama": "ok" if ollama_ok else "ko",
         "model": OLLAMA_MODEL,
         "model_available": model_ok,
+        "tts": await run_in_threadpool(tts.status),
     }

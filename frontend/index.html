@@ -29,13 +29,14 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
     }
 
     /* ── App shell ── */
-    .shell { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 52px); }
+    .shell { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 52px); min-height: 0; }
 
     /* ── Sidebar nav ── */
     .nav {
@@ -90,7 +91,7 @@
     #ollama-status.ko { background: var(--red-bg);   color: var(--red);   }
 
     /* ── Pages ── */
-    .page { display: none; flex: 1; overflow: hidden; }
+    .page { display: none; flex: 1; overflow: hidden; min-height: 0; }
     .page.active { display: flex; }
 
     /* ════════════════════════════════
@@ -473,6 +474,29 @@
     .mic-btn.listening { border-color: var(--red); background: var(--red-bg); animation: pulse 1.2s infinite; }
     @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(252,129,129,.15); } }
 
+    /* ── Stories ── */
+    .kind-switch { display: flex; gap: 0.5rem; }
+    .kind-option {
+      flex: 1; max-width: 300px; border: 1px solid var(--border); background: var(--surface);
+      border-radius: 8px; padding: 0.6rem 0.8rem; cursor: pointer; font-size: 0.82rem;
+      display: flex; flex-direction: column; gap: 0.15rem;
+    }
+    .kind-option small { color: var(--muted); font-size: 0.72rem; }
+    .kind-option.active { border-color: var(--accent); background: var(--accent-dim); }
+    .kind-option input { display: none; }
+    .kind-badge {
+      font-size: 0.6rem; font-weight: 600; letter-spacing: .04em; padding: 0.05rem 0.4rem;
+      border-radius: 99px; background: #3a2a1a; color: #f6ad55; margin-right: 0.3rem; vertical-align: middle;
+    }
+    .symptoms { display: flex; flex-direction: column; gap: 0.3rem; }
+    .symptoms-label { font-size: 0.72rem; color: var(--muted); letter-spacing: .05em; font-weight: 600; }
+    .symptoms ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+    .symptoms li {
+      font-size: 0.75rem; background: #3a2a1a; color: #fbd38d; border-radius: 6px; padding: 0.2rem 0.55rem;
+    }
+    .symptoms:empty { display: none; }
+    .tts-engine { font-size: 0.68rem; color: var(--muted); }
+
     /* ── Top bar ── */
     .topbar {
       height: 52px;
@@ -530,6 +554,7 @@
       <span class="call-hint">Pose ta question, l'IA fouille la Knowledge Base et te répond.</span>
       <label class="call-toggle" title="Lire les réponses à voix haute">
         <input type="checkbox" id="voice-toggle" checked> 🔊 Réponse vocale
+        <span class="tts-engine" id="tts-engine"></span>
       </label>
       <button class="ghost-btn" id="btn-stop-voice" onclick="stopSpeaking()" title="Couper la voix">🔇</button>
       <button class="ghost-btn" onclick="newCall()">＋ Nouvel appel</button>
@@ -576,6 +601,7 @@
         <div class="kb-viewer-content" id="viewer-content">
           <div class="viewer-title" id="viewer-title"></div>
           <div class="viewer-tags" id="viewer-tags"></div>
+          <div class="symptoms" id="viewer-symptoms"></div>
           <div class="viewer-body md" id="viewer-body"></div>
         </div>
       </div>
@@ -616,13 +642,29 @@
       <h2>Ajouter une source</h2>
 
       <div>
+        <div class="field-label">TYPE DE FICHE</div>
+        <div class="kind-switch">
+          <label class="kind-option active">
+            <input type="radio" name="kind" value="story" checked onchange="selectKind(this)">
+            <span>🩺 Story d'incident</span>
+            <small>Symptômes → diagnostic → résolution → vérification</small>
+          </label>
+          <label class="kind-option">
+            <input type="radio" name="kind" value="page" onchange="selectKind(this)">
+            <span>📄 Page wiki</span>
+            <small>Procédure, documentation, runbook</small>
+          </label>
+        </div>
+      </div>
+
+      <div>
         <div class="field-label">CONVERSATION / TEXTE</div>
         <textarea id="txt-input"
-          placeholder="Colle ici une conversation IT, des notes, un runbook...
+          placeholder="Colle ici un échange de support, des notes d'intervention, un runbook...
 
 Ex :
-User: Comment configurer le VPN FortiClient ?
-Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.fr comme gateway. Ton identifiant est ton login AD."></textarea>
+User: Mon VPN reste bloqué à 98%, erreur -14.
+Tech: C'est le certificat qui a expiré. Mets à jour FortiClient en 7.2 depuis le portail RH, puis reconnecte-toi avec ton login AD."></textarea>
       </div>
 
       <button id="btn-generate" onclick="generate()">✦ Générer la documentation</button>
@@ -633,6 +675,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
           <span class="result-title" id="result-title"></span>
           <div class="viewer-tags" id="result-tags"></div>
         </div>
+        <div class="symptoms" id="result-symptoms"></div>
         <div class="result-body md" id="result-body"></div>
       </div>
 
@@ -681,6 +724,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
         el.className   = 'ok';
         el.title       = '';
       }
+      setTTSEngine(d.tts || {});
     } catch {
       el.textContent = '● offline';
       el.className   = 'ko';
@@ -688,6 +732,22 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
   }
 
   // ── Ingestion ────────────────────────────────────────────────────
+  function selectedKind() {
+    return document.querySelector('input[name="kind"]:checked').value;
+  }
+
+  function selectKind(input) {
+    document.querySelectorAll('.kind-option').forEach(o =>
+      o.classList.toggle('active', o.contains(input)));
+  }
+
+  function renderSymptoms(el, symptoms) {
+    el.innerHTML = symptoms && symptoms.length
+      ? `<div class="symptoms-label">SYMPTÔMES CONNUS</div>
+         <ul>${symptoms.map(s => `<li>${escHtml(s)}</li>`).join('')}</ul>`
+      : '';
+  }
+
   async function generate() {
     const text = document.getElementById('txt-input').value.trim();
     if (!text) return;
@@ -700,7 +760,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       const r = await fetch('/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation: text }),
+        body: JSON.stringify({ conversation: text, kind: selectedKind() }),
       });
 
       if (!r.ok) {
@@ -719,7 +779,8 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       const d = await r.json();
 
       document.getElementById('result-success').textContent =
-        `✓ Page ajoutée à la Knowledge Base`;
+        d.kind === 'story' ? '✓ Story ajoutée à la Knowledge Base' : '✓ Page ajoutée à la Knowledge Base';
+      renderSymptoms(document.getElementById('result-symptoms'), d.symptoms);
       document.getElementById('result-title').textContent = d.title;
       document.getElementById('result-tags').innerHTML =
         d.tags.map(t => `<span class="tag-badge">${escHtml(t)}</span>`).join('');
@@ -758,7 +819,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
     }
     list.innerHTML = pages.map(p => `
       <div class="kb-card${p.filename === window.currentFilename ? ' active' : ''}" onclick="openPage(${allPages.indexOf(p)}, this)">
-        <h4>${escHtml(p.title)}</h4>
+        <h4>${p.kind === 'story' ? '<span class="kind-badge">STORY</span>' : ''}${escHtml(p.title)}</h4>
         <div class="kb-card-tags">${p.tags.map(t => `<span>${escHtml(t)}</span>`).join('')}</div>
         <div class="kb-card-date">${p.created.slice(0,10)}</div>
       </div>
@@ -779,6 +840,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
       const d = await r.json();
 
       document.getElementById('viewer-title').textContent = page.title;
+      renderSymptoms(document.getElementById('viewer-symptoms'), page.symptoms);
       renderViewerTags(page.tags || []);
       document.getElementById('viewer-body').innerHTML = renderMarkdown(d.content || '');
 
@@ -839,7 +901,8 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
     const lq = q.toLowerCase();
     renderKB(allPages.filter(p =>
       p.title.toLowerCase().includes(lq) ||
-      p.tags.some(t => t.toLowerCase().includes(lq))
+      p.tags.some(t => t.toLowerCase().includes(lq)) ||
+      (p.symptoms || []).some(s => s.toLowerCase().includes(lq))
     ));
   }
 
@@ -877,7 +940,8 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
 
   function describeResults(results) {
     if (!results.length) return '<div class="step-results">aucun résultat</div>';
-    return `<div class="step-results">${results.map(r => '→ ' + escHtml(r.title)).join('<br>')}</div>`;
+    return `<div class="step-results">${results.map(r =>
+      '→ ' + (r.kind === 'story' ? '🩺 ' : '📄 ') + escHtml(r.title)).join('<br>')}</div>`;
   }
 
   async function sendQuestion() {
@@ -986,7 +1050,7 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
   }
 
   function addReplayButton(el, answer) {
-    if (!answer || !('speechSynthesis' in window)) return;
+    if (!answer) return;
     const btn = document.createElement('button');
     btn.className = 'ghost-btn';
     btn.textContent = '🔊 Réécouter';
@@ -1025,11 +1089,57 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
         || voices.find(v => v.lang && v.lang.startsWith('fr'));
   }
 
+  // Moteur de synthèse : Piper (local, côté serveur) ou voix du navigateur en secours
+  let ttsEngine = 'navigateur';
+  let speechGen = 0;          // incrémenté à chaque arrêt : invalide les lectures en attente
+  let audioQueue = Promise.resolve();
+  let currentAudio = null;
+
+  function setTTSEngine(info) {
+    ttsEngine = info.engine === 'piper' ? 'piper' : 'navigateur';
+    const label = document.getElementById('tts-engine');
+    label.textContent = ttsEngine === 'piper' ? '(Piper)' : '(voix du navigateur)';
+    label.title = info.reason || (info.voice ? 'Voix : ' + info.voice : '');
+  }
+
+  function browserSay(text) {
+    if (!('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'fr-FR';
+    const v = frenchVoice();
+    if (v) u.voice = v;
+    u.rate = 1.05;
+    speechSynthesis.speak(u);
+  }
+
+  function piperSay(text) {
+    const gen = speechGen;
+    // La synthèse démarre tout de suite (en parallèle), la lecture se fait dans l'ordre
+    const audio = fetch('/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).then(r => r.ok ? r.blob() : Promise.reject(new Error('tts ' + r.status)));
+
+    audioQueue = audioQueue.then(async () => {
+      let blob;
+      try { blob = await audio; } catch { if (gen === speechGen) browserSay(text); return; }
+      if (gen !== speechGen) return;
+      const url = URL.createObjectURL(blob);
+      currentAudio = new Audio(url);
+      await new Promise(resolve => {
+        currentAudio.onended = currentAudio.onerror = currentAudio.onpause = resolve;
+        currentAudio.play().catch(resolve);
+      });
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+    });
+  }
+
   // Lit la réponse phrase par phrase pendant qu'elle s'écrit
   class SentenceSpeaker {
-    constructor() { this.buf = ''; this.enabled = 'speechSynthesis' in window; }
+    constructor() { this.buf = ''; }
     push(text) {
-      if (!this.enabled) return;
       this.buf += text;
       // Coupe après la dernière fin de phrase complète (ponctuation suivie d'un espace)
       let cut = -1;
@@ -1039,21 +1149,20 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
         this.buf = this.buf.slice(cut);
       }
     }
-    end() { if (this.enabled) { this.say(this.buf); this.buf = ''; } }
+    end() { this.say(this.buf); this.buf = ''; }
     reset() { this.buf = ''; stopSpeaking(); }
     say(text) {
       const t = speakableText(text);
       if (!t) return;
-      const u = new SpeechSynthesisUtterance(t);
-      u.lang = 'fr-FR';
-      const v = frenchVoice();
-      if (v) u.voice = v;
-      u.rate = 1.05;
-      speechSynthesis.speak(u);
+      if (ttsEngine === 'piper') piperSay(t);
+      else browserSay(t);
     }
   }
 
   function stopSpeaking() {
+    speechGen++;
+    audioQueue = Promise.resolve();
+    if (currentAudio) currentAudio.pause();
     if ('speechSynthesis' in window) speechSynthesis.cancel();
   }
 
@@ -1092,10 +1201,6 @@ Admin: Télécharge le client sur le portail RH, entre l'adresse vpn.entreprise.
 
   if (!SpeechRec) document.getElementById('btn-mic').style.display = 'none';
   if ('speechSynthesis' in window) speechSynthesis.getVoices();  // précharge les voix
-  else {
-    document.getElementById('voice-toggle').checked = false;
-    document.getElementById('voice-toggle').disabled = true;
-  }
 
   // ── Init ─────────────────────────────────────────────────────────
   checkHealth();

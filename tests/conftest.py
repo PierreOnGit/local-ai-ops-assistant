@@ -27,8 +27,8 @@ def fake_ollama(app_module, monkeypatch):
         response = "TITLE: Configuration VPN\nTAGS: VPN, FortiClient\n---\n# Configuration VPN\n\n## Résumé\nTest."
         calls = []
 
-    async def ask(conversation, existing_tags=None):
-        Fake.calls.append((conversation, existing_tags))
+    async def ask(conversation, existing_tags=None, kind="story"):
+        Fake.calls.append((conversation, existing_tags, kind))
         return Fake.response
 
     monkeypatch.setattr(app_module, "ask_ollama", ask)
