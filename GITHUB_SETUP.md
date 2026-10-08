@@ -1,5 +1,8 @@
 # 📋 Guide de publication sur GitHub
 
+> ℹ️ Ce guide a servi à la publication initiale : le repo est déjà sur GitHub.
+> Il reste utile comme aide-mémoire Git (branches, commits, pull requests).
+
 ## Étape 1: Préparer le repository local
 
 ```bash
@@ -21,7 +24,7 @@ git status
 1. Va sur https://github.com/new
 2. Crée un nouveau repository :
    - **Name**: `local-ai-ops-assistant`
-   - **Description**: `Transforme des conversations IT en pages wiki Markdown — 100% local, zéro cloud`
+   - **Description**: `Assistant IT 100% local : stories d'incidents, recherche dans la base et réponses vocales`
    - **Public** (pour que tout le monde voie)
    - **Ajoute une LICENSE** → choose MIT
    - **Ajoute un .gitignore** → Python (on a déjà un bon)
@@ -67,16 +70,15 @@ Sur GitHub, tu peux ajouter :
 - Des **issues** pour tracker les bugs et features
 - Des **milestones** pour organiser les phases
 
-Exemple d'issue pour le phase 2 (RAG) :
+Exemple d'issue pour la phase 3 (voir la Roadmap du README) :
 
 ```
-Title: Phase 2 - RAG: questions/réponses sur le wiki
-Description: 
-- Indexer les pages du wiki
-- Implémentation du retrieval sémantique
-- Intégration dans le frontend
-Labels: enhancement, phase-2
-Milestone: Phase 2 (Août)
+Title: Phase 3 - Ingestion PDF / DOCX / logs
+Description:
+- Extraire le texte des fichiers déposés
+- Générer une story ou une page wiki à partir du contenu
+- Activer les boutons « Bientôt » de l'onglet Ingestion
+Labels: enhancement, phase-3
 ```
 
 ## Commandes utiles après

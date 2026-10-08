@@ -1,95 +1,49 @@
 # 🎯 Guide des modèles Ollama
 
-Quelle machine as-tu ? Choisis le modèle approprié :
+## ⚠️ Le critère n°1 : le modèle sait-il utiliser des outils ?
 
-## 💻 CPU seulement (pas de GPU)
+L'Assistant fait d'abord une **recherche rapide**, puis laisse le modèle **creuser lui-même**
+(`search_docs`, `read_doc`) si ça ne suffit pas. Cette recherche approfondie nécessite un modèle
+qui gère le *tool calling* dans Ollama (badge **tools** sur [ollama.com/search](https://ollama.com/search)).
 
-| Modèle | Taille | Temps/req | Qualité | Recommandé |
-|--------|--------|-----------|---------|-----------|
-| **phi** | 2.7B | 20-30s | 🟨 Moyen | ⭐⭐⭐ |
-| **neural-chat** | 7B | 60-120s | 🟩 Bon | ⭐⭐ |
-| **orca-mini** | 7B | 60-120s | 🟩 Bon | ⭐ |
-| mistral | 7B | 60-120s | 🟩 Bon | ⭐ |
-| qwen:7b | 7B | 120-180s | 🟩 Bon | ⭐ |
+Avec un modèle sans outils, tout fonctionne quand même (génération des stories, réponses à partir
+de la recherche rapide), mais l'Assistant ne peut pas chercher plus loin et l'indique dans l'interface.
 
-**Commande :**
-```bash
-ollama pull phi
-# Dans .env :
-OLLAMA_MODEL=phi
-```
+| Modèle | Taille par défaut | Outils | Usage conseillé |
+|--------|-------------------|:------:|-----------------|
+| **qwen3** | 8B (existe en 0.6b → 32b) | ✅ | ⭐ Défaut du projet, très bon en français |
+| **qwen3:4b** | 4B | ✅ | ⭐ Machine sans GPU |
+| **qwen2.5** | 7B (existe en 0.5b → 72b) | ✅ | Alternative solide, pas de phase de « réflexion » |
+| **qwen2.5:3b** | 3B | ✅ | CPU modeste |
+| **llama3.1** | 8B | ✅ | Bon généraliste |
+| **llama3.2** | 3B | ✅ | Très léger |
+| **mistral** | 7B | ✅ | Bon généraliste |
+| phi | 2.7B | ❌ | Tests rapides uniquement |
+| neural-chat, orca-mini | 7B | ❌ | Déconseillés |
+| qwen:7b (ancien Qwen 1.5) | 7B | ❌ | Remplacé par qwen2.5 / qwen3 |
 
----
-
-## 🖥️ GPU (NVIDIA/AMD/Metal)
-
-| Modèle | Taille | Temps/req | Qualité | Recommandé |
-|--------|--------|-----------|---------|-----------|
-| phi | 2.7B | 5-10s | 🟨 Moyen | ⭐ |
-| neural-chat | 7B | 10-20s | 🟩 Bon | ⭐⭐ |
-| **qwen:7b** | 7B | 15-25s | 🟩 Bon | ⭐⭐⭐ |
-| mistral | 7B | 15-25s | 🟩 Bon | ⭐⭐⭐ |
-| qwen2.5 | 8B | 15-25s | 🟩 Bon | ⭐⭐ |
-| qwen3 | 14B | 20-40s | 🟩🟩 Très bon | ⭐⭐ |
-
-**Commande :**
-```bash
-ollama pull qwen:7b
-# Dans .env :
-OLLAMA_MODEL=qwen:7b
-```
+> `qwen3` commence ses réponses par une phase de réflexion (`<think>…</think>`) : l'app la masque,
+> mais elle rallonge le temps de réponse. Si l'Assistant te paraît lent, essaie `qwen2.5`.
 
 ---
 
-## 🚀 Performances réelles
+## 💻 Quelle taille pour ta machine ?
 
-### CPU (Intel i7-10700K)
-- `phi` : 20-30s ✅
-- `neural-chat` : 90-120s 
-- `qwen:7b` : 150-200s 
-- `qwen3` : 300-400s ❌
+Ordres de grandeur avec les versions quantifiées par défaut d'Ollama :
 
-### GPU (NVIDIA RTX 3070)
-- `phi` : 5-10s ✅
-- `qwen:7b` : 15-20s ✅✅
-- `qwen3` : 20-35s ✅✅
-- `qwen:32b` : 60-80s
+| Machine | Modèle conseillé | RAM / VRAM nécessaire |
+|---------|------------------|-----------------------|
+| CPU seul, 8 Go de RAM | `qwen3:4b` ou `qwen2.5:3b` | ~3-4 Go |
+| CPU seul, 16 Go de RAM | `qwen3` (8B) — lent mais meilleure qualité | ~6 Go |
+| GPU 6-8 Go | `qwen3` (8B) | ~6 Go |
+| GPU 12 Go et + | `qwen3:14b` | ~10 Go |
 
----
+Pense à garder de la place pour la voix : Whisper `small` utilise environ 1 Go de RAM en plus,
+Piper quelques centaines de Mo.
 
-## 🧪 Test rapide
-
-```bash
-# 1. Télécharger
-ollama pull phi
-
-# 2. Tester
-curl -X POST http://localhost:11434/api/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "phi",
-    "prompt": "Configure VPN FortiClient",
-    "stream": false
-  }'
-
-# 3. Voir le temps dans la console Ollama
-```
-
----
-
-## 💡 Recommandations
-
-### Tu as peu de VRAM (< 4GB) ou CPU seul ?
-→ **phi** (2.7B) — le plus rapide
-
-### Tu as une bonne machine CPU (i7+) ?
-→ **neural-chat** ou **orca-mini** (7B) — bon compromis
-
-### Tu as un GPU ?
-→ **qwen:7b** (7B) — meilleur rapport qualité/vitesse
-
-### Tu veux la meilleure qualité (pas grave si lent) ?
-→ **qwen3** (14B) + GPU
+Sur CPU, compte de quelques dizaines de secondes à plusieurs minutes pour générer une story,
+selon la machine et la taille du modèle. Si la génération dépasse `OLLAMA_TIMEOUT` (600 s par
+défaut), prends un modèle plus petit ou augmente le timeout.
 
 ---
 
@@ -97,52 +51,45 @@ curl -X POST http://localhost:11434/api/generate \
 
 ```bash
 # 1. Télécharger le nouveau modèle
-ollama pull phi
+ollama pull qwen2.5
 
 # 2. Vérifier qu'il est là
 ollama list
 
 # 3. Mettre à jour .env
-OLLAMA_MODEL=phi
+OLLAMA_MODEL=qwen2.5
 
 # 4. Relancer l'app
 uvicorn backend.main:app --reload
 ```
 
+Avec Docker : `OLLAMA_MODEL=qwen2.5 docker compose up` (le modèle est téléchargé automatiquement).
+
 ---
 
-## 📊 Comparatif détaillé
+## 🧪 Tester que le modèle gère les outils
 
-**phi** (2.7B)
-- ✅ Très rapide (20-30s)
-- ✅ Léger
-- ⚠️ Qualité moyenne
-- 👍 Parfait pour tester / CPU faible
+```bash
+curl http://localhost:11434/api/chat -d '{
+  "model": "qwen3",
+  "stream": false,
+  "messages": [{"role": "user", "content": "Cherche la procédure VPN"}],
+  "tools": [{"type": "function", "function": {
+    "name": "search_docs", "description": "Recherche dans la doc",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+  }}]
+}'
+```
 
-**neural-chat** (7B)
-- ✅ Rapide (60-120s)
-- ✅ Bonne qualité
-- ✅ Bon sur CPU
-- 👍 Meilleur compromis CPU
-
-**qwen:7b** (7B)
-- ✅ Rapide avec GPU (15-25s)
-- ✅ Bonne qualité
-- ⚠️ Lent sur CPU (150-200s)
-- 👍 Best all-around avec GPU
-
-**qwen3** (14B)
-- ✅ Très bonne qualité
-- ❌ Très lent sur CPU (300s+)
-- ✅ Rapide avec GPU puissant
-- 👍 Pour GPU uniquement
+- Réponse avec `"tool_calls"` → ✅ le modèle sait utiliser les outils.
+- Erreur `does not support tools` → ❌ recherche rapide uniquement.
 
 ---
 
 ## 🎯 TL;DR
 
 ```
-CPU uniquement    → phi
-GPU disponible    → qwen:7b
-Pas sûr ?         → neural-chat
+Pas de GPU      → qwen3:4b
+GPU disponible  → qwen3
+Trop lent ?     → qwen2.5 (pas de phase de réflexion)
 ```
