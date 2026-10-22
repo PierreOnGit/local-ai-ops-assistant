@@ -165,6 +165,15 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+**Test sur une vraie installation** (vrai Ollama, Piper, Whisper) : lance l'app, puis
+
+```bash
+python scripts/smoke_test.py
+```
+
+Il crée une story de test, interroge l'Assistant, fait lire une phrase par Piper et la fait
+retranscrire par Whisper, puis affiche ✅ / ⚠️ / ❌ pour chaque étape avec les temps mesurés.
+
 ---
 
 ## 🆘 Troubleshooting
@@ -243,6 +252,7 @@ curl -X POST http://localhost:11434/api/generate \
 ├── frontend/index.html  ← Frontend complet (fichier unique)
 ├── frontend/vendor/     ← marked + DOMPurify embarqués (fonctionne hors ligne)
 ├── tests/               ← Tests pytest (faux Ollama)
+├── scripts/smoke_test.py ← Test de bout en bout sur une vraie installation
 ├── data/
 │   └── wiki/            ← Pages générées (.md)
 ├── docker-compose.yml   ← App + Ollama + téléchargement du modèle
